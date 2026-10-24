@@ -1,23 +1,34 @@
+
 import http from "node:http";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { handleApiRequest } from "./api.js";
 
 const currentFile = fileURLToPath(import.meta.url);
 const currentDirectory = path.dirname(currentFile);
-
-// Project's public folder for static files
 const publicDirectory = path.resolve(currentDirectory, "../../public");
 
 const server = http.createServer(async (req, res) => {
   const requestUrl = new URL(req.url, "http://localhost");
 
+  // Keep the health endpoint from Build 3.
   if (requestUrl.pathname === "/health") {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ status: "ok" }));
     return;
   }
 
+  // Send API requests to the API handler.
+  if (
+    requestUrl.pathname === "/api" ||
+    requestUrl.pathname.startsWith("/api/")
+  ) {
+    await handleApiRequest(req, res);
+    return;
+  }
+
+  // Serve static files.
   if (req.method !== "GET") {
     res.writeHead(405, { "Content-Type": "text/plain" });
     res.end("Method Not Allowed");
@@ -51,7 +62,8 @@ const server = http.createServer(async (req, res) => {
     };
 
     res.writeHead(200, {
-      "Content-Type": contentTypes[extension] || "application/octet-stream",
+      "Content-Type":
+        contentTypes[extension] || "application/octet-stream",
     });
 
     res.end(content);
