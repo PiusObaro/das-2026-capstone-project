@@ -1,4 +1,3 @@
-
 {
   "name": "event-ticketing-capstone",
   "version": "1.0.0",
@@ -6,6 +5,7 @@
   "scripts": {
     "demo": "node scripts/demo.js",
     "benchmark": "node scripts/benchmark-lookup.js",
-    "test": "node --test"
+    "test": "node --test",
+    "start": "node src/server/server.js"
   }
 }
