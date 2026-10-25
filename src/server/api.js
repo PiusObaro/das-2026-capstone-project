@@ -1,11 +1,12 @@
 
-import http from "node:http";
-import { DomainError } from "../domain/errors.js";
-import { createStore } from "../domain/inventory.js";
-import { createEventService } from "../services/eventService.js";
 
-const store = createStore();
-const service = createEventService(store);
+import { DomainError } from "../domain/errors.js";
+import { openDatabase } from "../db/database.js";
+import { createSqliteEventService } from "../services/sqliteEventService.js";
+
+const db = openDatabase();
+const service = createSqliteEventService(db);
+
 
 function sendJson(res, status, data) {
   res.writeHead(status, {
