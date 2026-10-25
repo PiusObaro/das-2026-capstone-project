@@ -1,13 +1,290 @@
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Event Ticketing</title>
+  <meta
+    name="description"
+    content="Discover events, choose tickets and check out with our event booking demo."
+  >
+  <title>EventHub | Discover Events</title>
+  <link rel="stylesheet" href="styles.css">
+  <script type="module" src="app.js"></script>
 </head>
 <body>
-  <h1>Event Ticketing and Booking</h1>
-  <p>Welcome to our event ticketing application.</p>
-  <p>Build 3 server is running.</p>
+  <header class="site-header">
+    <a class="brand" href="#" id="homeLink" aria-label="EventHub home">
+      <span class="brand-icon" aria-hidden="true">E</span>
+      EventHub
+    </a>
+
+    <nav aria-label="Main navigation">
+      <a href="#eventsSection" id="eventsNavLink">Discover Events</a>
+      <a href="#eventsSection">Explore</a>
+    </nav>
+
+    <button class="header-button" id="homeButton" type="button">
+      Browse Events
+    </button>
+  </header>
+
+  <main>
+    <section class="hero" aria-labelledby="heroTitle">
+      <div class="hero-content">
+        <p class="eyebrow">MAKE EVERY MOMENT COUNT</p>
+        <h1 id="heroTitle">Discover events.<br>Make memories.</h1>
+        <p class="hero-description">
+          Find exciting experiences, book your tickets and get ready for
+          something unforgettable.
+        </p>
+        <a class="primary-button hero-button" href="#eventsSection">
+          Explore Events <span aria-hidden="true">→</span>
+        </a>
+      </div>
+      <div class="hero-decoration" aria-hidden="true">
+        <span class="hero-circle circle-one"></span>
+        <span class="hero-circle circle-two"></span>
+        <span class="hero-label">YOUR NEXT EXPERIENCE STARTS HERE</span>
+      </div>
+    </section>
+
+    <section class="events-section" id="eventsSection">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">FIND YOUR NEXT EXPERIENCE</p>
+          <h2>Explore events</h2>
+          <p class="muted">Discover something happening near you.</p>
+        </div>
+        <p id="eventCount" class="event-count" aria-live="polite"></p>
+      </div>
+
+      <form id="filterForm" class="filter-panel">
+        <div class="field search-field">
+          <label for="searchInput">Search events</label>
+          <input
+            id="searchInput"
+            name="search"
+            type="search"
+            placeholder="Try music, technology..."
+          >
+        </div>
+
+        <div class="field">
+          <label for="cityFilter">City</label>
+          <select id="cityFilter" name="city">
+            <option value="">All cities</option>
+            <option value="Lagos">Lagos</option>
+            <option value="Abuja">Abuja</option>
+            <option value="Port Harcourt">Port Harcourt</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <label for="categoryFilter">Category</label>
+          <select id="categoryFilter" name="category">
+            <option value="">All categories</option>
+            <option value="Music">Music</option>
+            <option value="Technology">Technology</option>
+            <option value="Food">Food</option>
+            <option value="Comedy">Comedy</option>
+            <option value="Arts">Arts</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <label for="sortFilter">Sort by</label>
+          <select id="sortFilter" name="sort">
+            <option value="date">Date: earliest first</option>
+            <option value="price">Price: lowest first</option>
+            <option value="availability">Most tickets available</option>
+            <option value="title">Event name: A–Z</option>
+          </select>
+        </div>
+
+        <button class="reset-button" id="resetFilters" type="button">
+          Reset filters
+        </button>
+      </form>
+
+      <div
+        id="eventsGrid"
+        class="events-grid"
+        aria-label="Available events"
+        aria-live="polite"
+      ></div>
+
+      <div id="emptyState" class="empty-state" hidden>
+        <span aria-hidden="true">🔎</span>
+        <h3>No events found</h3>
+        <p>Try another search or reset your filters.</p>
+        <button class="primary-button" id="emptyResetButton" type="button">
+          Show all events
+        </button>
+      </div>
+    </section>
+
+    <section id="eventDetailsSection" class="content-section" hidden>
+      <button class="text-button" id="backToEvents" type="button">
+        ← Back to events
+      </button>
+      <div id="eventDetails"></div>
+    </section>
+
+    <section id="checkoutSection" class="content-section" hidden>
+      <button class="text-button" id="backToDetails" type="button">
+        ← Back to event
+      </button>
+
+      <div class="checkout-layout">
+        <div class="checkout-main">
+          <p class="eyebrow">ALMOST THERE</p>
+          <h2>Complete your booking</h2>
+          <p class="muted">
+            This demo uses test card numbers only. Never enter real payment details.
+          </p>
+
+          <div class="countdown-panel">
+            <div>
+              <strong>Time remaining</strong>
+              <p>Your ticket selection is reserved temporarily.</p>
+            </div>
+            <span id="countdown" class="countdown" role="timer"
+              aria-live="off">05:00</span>
+          </div>
+
+          <form id="checkoutForm" class="checkout-form">
+            <div class="field">
+              <label for="customerName">Full name</label>
+              <input
+                id="customerName"
+                name="customerName"
+                type="text"
+                autocomplete="name"
+                required
+                maxlength="100"
+                placeholder="Enter your full name"
+              >
+            </div>
+
+            <div class="field">
+              <label for="customerEmail">Email address</label>
+              <input
+                id="customerEmail"
+                name="customerEmail"
+                type="email"
+                autocomplete="email"
+                required
+                placeholder="you@example.com"
+              >
+            </div>
+
+            <h3 class="payment-heading">Mock card details</h3>
+
+            <div class="field">
+              <label for="cardName">Name on card</label>
+              <input
+                id="cardName"
+                name="cardName"
+                type="text"
+                autocomplete="cc-name"
+                required
+                maxlength="100"
+                placeholder="Name on card"
+              >
+            </div>
+
+            <div class="field">
+              <label for="cardNumber">Test card number</label>
+              <input
+                id="cardNumber"
+                name="cardNumber"
+                type="text"
+                inputmode="numeric"
+                autocomplete="off"
+                required
+                maxlength="19"
+                pattern="[0-9 ]{13,19}"
+                placeholder="4242 4242 4242 4242"
+                aria-describedby="cardHelp"
+              >
+              <p id="cardHelp" class="field-help">
+                Success: 4242 4242 4242 4242<br>
+                Declined: 4000 0000 0000 0002
+              </p>
+            </div>
+
+            <div class="card-row">
+              <div class="field">
+                <label for="cardExpiry">Expiry date</label>
+                <input
+                  id="cardExpiry"
+                  name="cardExpiry"
+                  type="text"
+                  autocomplete="off"
+                  required
+                  placeholder="MM/YY"
+                  pattern="(0[1-9]|1[0-2])/[0-9]{2}"
+                  maxlength="5"
+                >
+              </div>
+
+              <div class="field">
+                <label for="cardCvc">CVC</label>
+                <input
+                  id="cardCvc"
+                  name="cardCvc"
+                  type="password"
+                  inputmode="numeric"
+                  autocomplete="off"
+                  required
+                  pattern="[0-9]{3,4}"
+                  maxlength="4"
+                  placeholder="123"
+                >
+              </div>
+            </div>
+
+            <p id="paymentMessage" class="form-message" role="alert" hidden></p>
+
+            <button
+              class="primary-button pay-button"
+              id="payButton"
+              type="submit"
+            >
+              Pay <span id="payButtonAmount"></span>
+            </button>
+          </form>
+        </div>
+
+        <aside class="order-summary" aria-labelledby="summaryTitle">
+          <h3 id="summaryTitle">Your order</h3>
+          <div id="orderSummary"></div>
+          <p class="summary-note">
+            Demo only — no real payment will be taken.
+          </p>
+        </aside>
+      </div>
+    </section>
+
+    <section id="confirmationSection" class="content-section" hidden>
+      <div class="confirmation-card">
+        <span class="success-icon" aria-hidden="true">✓</span>
+        <p class="eyebrow">BOOKING COMPLETE</p>
+        <h2>You're going!</h2>
+        <p id="confirmationMessage"></p>
+        <p id="bookingReference" class="booking-reference"></p>
+        <button class="primary-button" id="confirmationHome" type="button">
+          Discover more events
+        </button>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <a class="brand footer-brand" href="#eventsSection">EventHub</a>
+    <p>Discover. Book. Experience.</p>
+    <p>Build 6 frontend demo · Mock data only</p>
+  </footer>
 </body>
 </html>
