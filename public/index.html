@@ -19,10 +19,15 @@
       EventHub
     </a>
 
-    <nav aria-label="Main navigation">
-      <a href="#eventsSection" id="eventsNavLink">Discover Events</a>
-      <a href="#eventsSection">Explore</a>
-    </nav>
+   <nav aria-label="Main navigation">
+  <a href="#eventsSection" id="eventsNavLink">Discover Events</a>
+  <a href="#eventsSection">Explore</a>
+  <a href="#loginSection" id="loginNavLink">Login</a>
+  <a href="#myTicketsSection" id="myTicketsNavLink">My Tickets</a>
+  <a href="#organizerDashboardSection" id="dashboardNavLink">
+    Organizer Dashboard
+  </a>
+</nav>
 
     <button class="header-button" id="homeButton" type="button">
       Browse Events
@@ -278,7 +283,141 @@
           Discover more events
         </button>
       </div>
+        </section>
+
+    <!-- Login Section -->
+    <section id="loginSection" class="content-section" hidden>
+      <div class="confirmation-card">
+        <h2>Login to EventHub</h2>
+
+        <form id="loginForm">
+          <div class="field">
+            <label for="loginEmail">Email address</label>
+            <input
+              id="loginEmail"
+              type="email"
+              required
+              placeholder="Enter your email"
+            >
+          </div>
+
+          <div class="field">
+            <label for="loginPassword">Password</label>
+            <input
+              id="loginPassword"
+              type="password"
+              required
+              placeholder="Enter your password"
+            >
+          </div>
+
+          <p id="loginMessage" class="form-message" role="alert"></p>
+
+          <button class="primary-button" type="submit">
+            Login
+          </button>
+        </form>
+      </div>
     </section>
+
+            <!-- Signup Form -->
+        <h2>Create an Account</h2>
+
+        <form id="signupForm">
+          <div class="field">
+            <label for="signupName">Full name</label>
+            <input
+              id="signupName"
+              type="text"
+              required
+              placeholder="Enter your full name"
+            >
+          </div>
+
+          <div class="field">
+            <label for="signupEmail">Email address</label>
+            <input
+              id="signupEmail"
+              type="email"
+              required
+              placeholder="Enter your email"
+            >
+          </div>
+
+          <div class="field">
+            <label for="signupPassword">Password</label>
+            <input
+              id="signupPassword"
+              type="password"
+              minlength="8"
+              required
+              placeholder="At least 8 characters"
+            >
+          </div>
+
+          <div class="field">
+            <label for="signupRole">Account type</label>
+            <select id="signupRole" required>
+              <option value="attendee">Attendee</option>
+              <option value="organizer">Organizer</option>
+            </select>
+          </div>
+
+          <p id="signupMessage" class="form-message" role="alert"></p>
+
+          <button class="primary-button" type="submit">
+            Create Account
+          </button>
+        </form>
+
+    <!-- My Tickets Section -->
+    <section id="myTicketsSection" class="content-section" hidden>
+      <h2>My Tickets</h2>
+      <div id="myTicketsList"></div>
+    </section>
+
+    <!-- Organizer Dashboard Section -->
+    <section id="organizerDashboardSection" class="content-section" hidden>
+  <h2>Organizer Dashboard</h2>
+
+  <div class="confirmation-card">
+    <h3>Create a New Event</h3>
+
+    <form id="createEventForm">
+      <div class="field">
+        <label for="eventTitle">Event title</label>
+        <input id="eventTitle" type="text" required placeholder="Enter event title">
+      </div>
+
+      <div class="field">
+        <label for="eventCity">City</label>
+        <input id="eventCity" type="text" required placeholder="Enter city">
+      </div>
+
+      <div class="field">
+        <label for="eventVenue">Venue</label>
+        <input id="eventVenue" type="text" required placeholder="Enter venue">
+      </div>
+
+      <div class="field">
+        <label for="eventDate">Event date</label>
+        <input id="eventDate" type="date" required>
+      </div>
+
+      <p id="createEventMessage" class="form-message" role="alert"></p>
+
+      <button class="primary-button" type="submit">
+        Create Event
+      </button>
+    </form>
+  </div>
+
+  <h3>My Events</h3>
+  <div id="organizerEventsList"></div>
+</section>
+  </main>
+
+  <footer class="site-footer">
   </main>
 
   <footer class="site-footer">

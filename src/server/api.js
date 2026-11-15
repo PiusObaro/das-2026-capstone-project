@@ -3,10 +3,19 @@
 import { DomainError } from "../domain/errors.js";
 import { openDatabase } from "../db/database.js";
 import { createSqliteEventService } from "../services/sqliteEventService.js";
+import { createUserService } from "../services/userService.js";
+import { verifyToken } from "../auth/tokens.js";
 
 const db = openDatabase();
 const service = createSqliteEventService(db);
 
+const tokenSecret = process.env.TOKEN_SECRET;
+
+if (!tokenSecret || Buffer.byteLength(tokenSecret) < 32) {
+  throw new Error("TOKEN_SECRET must be at least 32 bytes.");
+}
+
+const userService = createUserService(db, tokenSecret);
 
 function sendJson(res, status, data) {
   res.writeHead(status, {
@@ -49,14 +58,85 @@ function eventResponse(event) {
 
 function errorStatus(code) {
   if (code === "VALIDATION") return 400;
+  if (code === "UNAUTHORIZED") return 401;
+  if (code === "FORBIDDEN") return 403;
   if (code === "NOT_FOUND") return 404;
   if (code === "METHOD_NOT_ALLOWED") return 405;
-  if (code === "SOLD_OUT" || code === "INVALID_STATE") return 409;
+
+  if (
+    code === "CONFLICT" ||
+    code === "SOLD_OUT" ||
+    code === "INVALID_STATE"
+  ) {
+    return 409;
+  }
+
   return 500;
 }
 
 function methodNotAllowed() {
   throw new DomainError("Method not allowed for this endpoint.", "METHOD_NOT_ALLOWED");
+}
+
+
+function authenticate(req) {
+  const authorization = req.headers.authorization;
+
+  if (
+    typeof authorization !== "string" ||
+    !authorization.startsWith("Bearer ")
+  ) {
+    throw new DomainError(
+      "Authentication required.",
+      "UNAUTHORIZED"
+    );
+  }
+
+  const token = authorization.slice(7);
+  const user = verifyToken(token, tokenSecret);
+
+  if (!user) {
+    throw new DomainError(
+      "Invalid or expired token.",
+      "UNAUTHORIZED"
+    );
+  }
+
+  return user;
+}
+
+function requireRole(user, role) {
+  if (user.role !== role) {
+    throw new DomainError(
+      `Only ${role}s can access this endpoint.`,
+      "FORBIDDEN"
+    );
+  }
+}
+
+function requireEventOwner(eventId, user) {
+  const event = db.prepare(`
+    SELECT organizer_id
+    FROM events
+    WHERE id = ?
+  `).get(eventId);
+
+  if (!event) {
+    throw new DomainError(
+      "Event not found.",
+      "NOT_FOUND"
+    );
+  }
+
+  if (
+    user.role !== "organizer" ||
+    event.organizer_id !== user.sub
+  ) {
+    throw new DomainError(
+      "You are not allowed to manage this event.",
+      "FORBIDDEN"
+    );
+  }
 }
 
 export async function handleApiRequest(req, res) {
@@ -68,13 +148,50 @@ export async function handleApiRequest(req, res) {
 
   try {
     const { pathname, searchParams } = url;
+        let match;
+        // User signup
+    if (
+      pathname === "/api/auth/signup" &&
+      req.method === "POST"
+    ) {
+      const body = await readJson(req);
+      const result = await userService.signup(body);
 
+      return sendJson(res, 201, result);
+    }
+
+    // User login
+    if (
+      pathname === "/api/auth/login" &&
+      req.method === "POST"
+    ) {
+      const body = await readJson(req);
+      const result = await userService.login(body);
+
+      return sendJson(res, 200, result);
+    }
     if (pathname === "/api/events") {
       if (req.method === "POST") {
-        const body = await readJson(req);
-        const event = service.createEvent(body);
-        return sendJson(res, 201, { event: eventResponse(event) });
-      }
+  const user = authenticate(req);
+
+  if (user.role !== "organizer") {
+    throw new DomainError(
+      "Only organizers can create events.",
+      "FORBIDDEN"
+    );
+  }
+
+  const body = await readJson(req);
+
+  const event = service.createEvent({
+    ...body,
+    organizerId: user.sub,
+  });
+
+  return sendJson(res, 201, {
+    event: eventResponse(event),
+  });
+}
 
       if (req.method === "GET") {
         const criteria = {};
@@ -121,69 +238,176 @@ export async function handleApiRequest(req, res) {
 
       methodNotAllowed();
     }
+    
+        // Get events belonging to the logged-in organizer.
+if (pathname === "/api/my-events") {
+  if (req.method !== "GET") methodNotAllowed();
 
-    let match = pathname.match(/^\/api\/events\/([^/]+)\/tiers$/);
+  const user = authenticate(req);
+  requireRole(user, "organizer");
 
-    if (match) {
-      if (req.method !== "POST") methodNotAllowed();
+  const events = service.getOrganizerEvents(user.sub);
 
-      const body = await readJson(req);
-      const tier = service.addTier(decodeURIComponent(match[1]), body);
+  return sendJson(res, 200, { events });
+}
+    
+       // Add a ticket tier to an event (organizer only)
+       // Get tickets belonging to the logged-in attendee.
+if (pathname === "/api/my-tickets") {
+  if (req.method !== "GET") methodNotAllowed();
 
-      return sendJson(res, 201, { tier });
-    }
+  const user = authenticate(req);
+  requireRole(user, "attendee");
 
+  const bookings = service.getAttendeeBookings(user.sub);
+
+  return sendJson(res, 200, { bookings });
+}
+
+  // Pay for multiple bookings together.
+if (pathname === "/api/booking-batches/pay") {
+  if (req.method !== "POST") methodNotAllowed();
+
+  const user = authenticate(req);
+  requireRole(user, "attendee");
+
+  const body = await readJson(req);
+
+  const bookings = service.payBookings(
+    body.references,
+    user.sub
+  );
+
+  return sendJson(res, 200, { bookings });
+}
+
+    match = pathname.match(/^\/api\/bookings\/([^/]+)\/pay$/);
+
+if (match) {
+  if (req.method !== "POST") methodNotAllowed();
+
+  const user = authenticate(req);
+  requireRole(user, "attendee");
+
+  const booking = await service.payBooking(
+    decodeURIComponent(match[1]),
+    user.sub
+  );
+
+  return sendJson(res, 200, { booking });
+}
+   // Add a ticket tier to an event (organizer only)
+match = pathname.match(/^\/api\/events\/([^/]+)\/tiers$/);
+
+if (match) {
+  if (req.method !== "POST") methodNotAllowed();
+
+  const user = authenticate(req);
+  const eventId = decodeURIComponent(match[1]);
+
+  requireEventOwner(eventId, user);
+
+  const body = await readJson(req);
+  const tier = service.addTier(eventId, body);
+
+  return sendJson(res, 201, { tier });
+} 
+
+        // Publish an event (organizer only)
     match = pathname.match(/^\/api\/events\/([^/]+)\/publish$/);
 
     if (match) {
       if (req.method !== "POST") methodNotAllowed();
 
-      const event = service.publishEvent(decodeURIComponent(match[1]));
+      const user = authenticate(req);
+      const eventId = decodeURIComponent(match[1]);
 
-      return sendJson(res, 200, { event: eventResponse(event) });
+      requireEventOwner(eventId, user);
+
+      const event = service.publishEvent(eventId);
+
+      return sendJson(res, 200, {
+        event: eventResponse(event),
+      });
     }
 
-    match = pathname.match(/^\/api\/tiers\/([^/]+)\/bookings$/);
+    // Create multiple ticket bookings for one event.
+match = pathname.match(/^\/api\/events\/([^/]+)\/bookings$/);
 
-    if (match) {
-      if (req.method !== "POST") methodNotAllowed();
+if (match) {
+  if (req.method !== "POST") methodNotAllowed();
 
-      const body = await readJson(req);
-      const booking = service.createBooking(
-        decodeURIComponent(match[1]),
-        body.customerName,
-        body.quantity ?? 1
-      );
+  const user = authenticate(req);
+  requireRole(user, "attendee");
 
-      return sendJson(res, 201, { booking });
-    }
+  const body = await readJson(req);
 
-    match = pathname.match(/^\/api\/bookings\/([^/]+)\/pay$/);
+  const bookings = service.createBookings(
+    decodeURIComponent(match[1]),
+    body.items,
+    body.customerName || user.name,
+    user.sub
+  );
 
-    if (match) {
-      if (req.method !== "POST") methodNotAllowed();
+  return sendJson(res, 201, { bookings });
+}
 
-      const booking = await service.payBooking(
-        decodeURIComponent(match[1])
-      );
+    // Create a booking (attendee only)
+   match = pathname.match(/^\/api\/tiers\/([^/]+)\/bookings$/);
 
-      return sendJson(res, 200, { booking });
-    }
+if (match) {
+  if (req.method !== "POST") methodNotAllowed();
 
-    match = pathname.match(/^\/api\/bookings\/([^/]+)\/cancel$/);
+  const user = authenticate(req);
+  requireRole(user, "attendee");
 
-    if (match) {
-      if (req.method !== "POST") methodNotAllowed();
+  const body = await readJson(req);
 
-      const booking = service.cancelUnpaidBooking(
-        decodeURIComponent(match[1])
-      );
+  const booking = service.createBooking(
+    decodeURIComponent(match[1]),
+    body.customerName || user.name,
+    body.quantity ?? 1,
+    user.sub
+  );
 
-      return sendJson(res, 200, { booking });
-    }
+  return sendJson(res, 201, { booking });
+}
 
+// Cancel multiple unpaid bookings together.
+if (pathname === "/api/booking-batches/cancel") {
+  if (req.method !== "POST") methodNotAllowed();
+
+  const user = authenticate(req);
+  requireRole(user, "attendee");
+
+  const body = await readJson(req);
+
+  const bookings = service.cancelBookings(
+    body.references,
+    user.sub
+  );
+
+  return sendJson(res, 200, { bookings });
+}
+
+   match = pathname.match(/^\/api\/bookings\/([^/]+)\/cancel$/);
+
+if (match) {
+  if (req.method !== "POST") methodNotAllowed();
+
+  const user = authenticate(req);
+  requireRole(user, "attendee");
+
+  const booking = service.cancelUnpaidBooking(
+    decodeURIComponent(match[1]),
+    user.sub
+  );
+
+  return sendJson(res, 200, { booking });
+}
     throw new DomainError("API endpoint not found.", "NOT_FOUND");
-  } catch (error) {
+     } catch (error) {
+
     const knownError =
       error instanceof DomainError ||
       error instanceof TypeError;

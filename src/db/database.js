@@ -7,7 +7,6 @@ import { fileURLToPath } from "node:url";
 const currentFile = fileURLToPath(import.meta.url);
 const currentDirectory = path.dirname(currentFile);
 
-// Store the database in the project's data folder.
 const dataDirectory = path.resolve(currentDirectory, "../../data");
 mkdirSync(dataDirectory, { recursive: true });
 
@@ -15,14 +14,39 @@ const databasePath =
   process.env.DATABASE_PATH ||
   path.join(dataDirectory, "events.sqlite");
 
+function addColumnIfMissing(db, table, column, definition) {
+  const columns = db.prepare(
+    `PRAGMA table_info(${table})`
+  ).all();
+
+  const exists = columns.some(
+    (item) => item.name === column
+  );
+
+  if (!exists) {
+    db.exec(
+      `ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`
+    );
+  }
+}
+
 export function openDatabase() {
   const db = new DatabaseSync(databasePath);
+  console.log("DATABASE IN USE:", databasePath);
 
-  // Make SQLite enforce relationships between tables.
   db.exec("PRAGMA foreign_keys = ON;");
 
-  // Create tables if they do not already exist.
   db.exec(`
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      email TEXT NOT NULL COLLATE NOCASE UNIQUE,
+      password_hash TEXT NOT NULL,
+      role TEXT NOT NULL
+        CHECK (role IN ('organizer', 'attendee', 'staff')),
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
     CREATE TABLE IF NOT EXISTS events (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -56,6 +80,33 @@ export function openDatabase() {
       payment_status TEXT NOT NULL,
       FOREIGN KEY (tier_id) REFERENCES tiers(id)
     );
+  `); 
+
+  // Add ownership fields without deleting existing records.
+  addColumnIfMissing(
+    db,
+    "events",
+    "organizer_id",
+    "TEXT REFERENCES users(id)"
+  );
+
+  addColumnIfMissing(
+    db,
+    "bookings",
+    "attendee_id",
+    "TEXT REFERENCES users(id)"
+  );
+
+  // Make user and ownership lookups faster.
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_users_email
+    ON users(email);
+
+    CREATE INDEX IF NOT EXISTS idx_events_organizer
+    ON events(organizer_id);
+
+    CREATE INDEX IF NOT EXISTS idx_bookings_attendee
+    ON bookings(attendee_id);
   `);
 
   return db;

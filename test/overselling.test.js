@@ -78,10 +78,32 @@ test("50 people compete for the last ticket: exactly one succeeds", async (t) =>
   assert.equal(ready, true, "API server should start");
 
   // Create an event.
+    // Sign up an organizer.
+  const signupResponse = await fetch(
+    `${baseUrl}/api/auth/signup`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "Test Organizer",
+        email: "overselling-organizer@example.com",
+        password: "Password123",
+        role: "organizer",
+      }),
+    }
+  );
+
+  assert.equal(signupResponse.status, 201);
+
+  const { token } = await signupResponse.json();
+
+  const authHeaders = {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${token}`,
+  };
   const eventResponse = await fetch(`${baseUrl}/api/events`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
+    headers: authHeaders,    body: JSON.stringify({
       title: "Last Ticket Test",
       city: "Lagos",
       venue: "Test Hall",
@@ -98,7 +120,7 @@ test("50 people compete for the last ticket: exactly one succeeds", async (t) =>
     `${baseUrl}/api/events/${event.id}/tiers`,
     {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: authHeaders,
       body: JSON.stringify({
         name: "Last Ticket",
         priceCents: 5000,
@@ -113,18 +135,45 @@ test("50 people compete for the last ticket: exactly one succeeds", async (t) =>
   assert.equal(tier.available, 1);
 
   // Publish the event.
-  const publishResponse = await fetch(
-    `${baseUrl}/api/events/${event.id}/publish`,
-    { method: "POST" }
-  );
+ const publishResponse = await fetch(
+  `${baseUrl}/api/events/${event.id}/publish`,
+  {
+    method: "POST",
+    headers: authHeaders,
+  }
+);
 
   assert.equal(publishResponse.status, 200);
+
+    // Create an attendee account.
+  const attendeeSignupResponse = await fetch(
+    `${baseUrl}/api/auth/signup`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "Test Attendee",
+        email: "overselling-attendee@example.com",
+        password: "Password123",
+        role: "attendee",
+      }),
+    }
+  );
+
+  assert.equal(attendeeSignupResponse.status, 201);
+
+  const { token: attendeeToken } = await attendeeSignupResponse.json();
+
+  const attendeeHeaders = {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${attendeeToken}`,
+  };
 
   // Send 50 booking requests at the same time.
   const attempts = Array.from({ length: 50 }, (_, index) =>
     fetch(`${baseUrl}/api/tiers/${tier.id}/bookings`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: attendeeHeaders,
       body: JSON.stringify({
         customerName: `Customer ${index + 1}`,
         quantity: 1,

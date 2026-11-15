@@ -34,7 +34,29 @@ const orderSummary = document.querySelector("#orderSummary");
 
 const confirmationMessage = document.querySelector("#confirmationMessage");
 const bookingReference = document.querySelector("#bookingReference");
+// Login form elements.
+const loginForm = document.querySelector("#loginForm");
+const loginEmail = document.querySelector("#loginEmail");
+const loginPassword = document.querySelector("#loginPassword");
+const loginMessage = document.querySelector("#loginMessage");
 
+// Signup form elements.
+const signupForm = document.querySelector("#signupForm");
+const signupName = document.querySelector("#signupName");
+const signupEmail = document.querySelector("#signupEmail");
+const signupPassword = document.querySelector("#signupPassword");
+const signupRole = document.querySelector("#signupRole");
+const signupMessage = document.querySelector("#signupMessage");
+// Create Event form elements.
+const createEventForm = document.querySelector("#createEventForm");
+const eventTitle = document.querySelector("#eventTitle");
+const eventCity = document.querySelector("#eventCity");
+const eventVenue = document.querySelector("#eventVenue");
+const eventDate = document.querySelector("#eventDate");
+const createEventMessage = document.querySelector("#createEventMessage");
+// Keep track of the logged-in user.
+let currentUser = null;
+let authToken = sessionStorage.getItem("authToken");
 // Format prices stored in kobo as Nigerian naira.
 const money = new Intl.NumberFormat("en-NG", {
   style: "currency",
@@ -60,19 +82,145 @@ let currentBooking = null;
 let countdownTimer = null;
 let secondsRemaining = 300;
 
+// Store events retrieved from the real database API.
+let publishedEvents = [];
+
 // Show one section and hide the others.
 function showSection(sectionToShow) {
   [
     eventsSection,
     eventDetailsSection,
     checkoutSection,
-    confirmationSection
+    confirmationSection,
+    document.querySelector("#loginSection"),
+    document.querySelector("#myTicketsSection"),
+    document.querySelector("#organizerDashboardSection")
   ].forEach((section) => {
     section.hidden = section !== sectionToShow;
   });
 
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
+// Handle new user registration.
+signupForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+
+  signupMessage.textContent = "Creating your account...";
+  signupMessage.className = "form-message";
+
+  try {
+    const response = await fetch("/api/auth/signup", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        name: signupName.value.trim(),
+        email: signupEmail.value.trim(),
+        password: signupPassword.value,
+        role: signupRole.value,
+      }),
+    });
+
+    const result = await response.json();
+
+    if (!response.ok) {
+      throw new Error(result.error?.message || "Signup failed.");
+    }
+
+    signupMessage.textContent = "Account created successfully! You can now log in.";
+    signupForm.reset();
+  } catch (error) {
+    signupMessage.textContent = error.message;
+    signupMessage.className = "form-message payment-error";
+  }
+});
+
+// Handle event creation.
+createEventForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+
+  createEventMessage.textContent = "Creating event...";
+  createEventMessage.className = "form-message";
+
+  try {
+    const response = await fetch("/api/events", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${authToken}`,
+      },
+      body: JSON.stringify({
+        title: eventTitle.value.trim(),
+        city: eventCity.value.trim(),
+        venue: eventVenue.value.trim(),
+        date: eventDate.value,
+      }),
+    });
+
+    const result = await response.json();
+
+    if (!response.ok) {
+      throw new Error(
+        result.error?.message || "Could not create event."
+      );
+    }
+
+    createEventMessage.textContent =
+      "Event created successfully! You can now add ticket tiers.";
+
+    createEventForm.reset();
+
+    await loadOrganizerEvents();
+  } catch (error) {
+    createEventMessage.textContent = error.message;
+    createEventMessage.className = "form-message payment-error";
+  }
+});
+
+// Handle user login.
+loginForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+
+  loginMessage.textContent = "Logging in...";
+  loginMessage.className = "form-message";
+
+  try {
+    const response = await fetch("/api/auth/login", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        email: loginEmail.value.trim(),
+        password: loginPassword.value
+      })
+    });
+
+    const result = await response.json();
+
+    if (!response.ok) {
+      throw new Error(result.message || "Login failed.");
+    }
+
+    currentUser = result.user;
+    authToken = result.token;
+
+    sessionStorage.setItem("authToken", authToken);
+
+    loginMessage.textContent = "Login successful!";
+    loginForm.reset();
+
+    if (currentUser.role === "organizer") {
+  loadOrganizerEvents();
+} else {
+  showSection(eventsSection);
+}
+  } catch (error) {
+    loginMessage.textContent = error.message;
+    loginMessage.className = "form-message payment-error";
+  }
+});
 
 function stopCountdown() {
   if (countdownTimer !== null) {
@@ -100,6 +248,60 @@ function getCheapestAvailableTier(event) {
   );
 }
 
+
+// Load published events from the real API.
+
+async function loadPublishedEvents() {
+  eventsGrid.textContent = "Loading events...";
+
+  try {
+    const response = await fetch("/api/events");
+    const result = await response.json();
+
+    if (!response.ok) {
+      throw new Error(
+        result.error?.message || "Could not load events."
+      );
+    }
+
+    const sampleEventsByTitle = new Map(
+      getEvents().map((event) => [
+        event.title.trim().toLowerCase(),
+        event
+      ])
+    );
+
+    publishedEvents = result.events.map((event) => {
+      const sample = sampleEventsByTitle.get(
+        event.title.trim().toLowerCase()
+      );
+
+      return {
+        ...event,
+        category: sample?.category || "Other",
+        description:
+          sample?.description || "No event description provided yet.",
+        image: sample?.image || "",
+        time: sample?.time || "Time to be announced",
+        tiers: event.tiers || [],
+      };
+    });
+
+    renderEvents();
+  } catch (error) {
+    eventsGrid.textContent = error.message;
+    eventCount.textContent = "Unable to load events";
+  }
+}
+
+
+// Find an event in the real published-events list.
+function getPublishedEventById(eventId) {
+  return publishedEvents.find(
+    (event) => String(event.id) === String(eventId)
+  ) || null;
+}
+
 // Display the events on the page.
 function renderEvents() {
   const searchText = searchInput.value.trim().toLowerCase();
@@ -107,8 +309,7 @@ function renderEvents() {
   const selectedCategory = categoryFilter.value;
   const sortBy = sortFilter.value;
 
-  let filteredEvents = getEvents().filter((event) => {
-    const matchesSearch =
+let filteredEvents = publishedEvents.filter((event) => {    const matchesSearch =
       event.title.toLowerCase().includes(searchText) ||
       event.city.toLowerCase().includes(searchText) ||
       event.venue.toLowerCase().includes(searchText);
@@ -208,8 +409,7 @@ function renderEvents() {
 
 // Show the details of one event.
 function renderEventDetails(eventId) {
-  const event = getEventById(eventId);
-
+const event = getPublishedEventById(eventId);
   if (!event) {
     showSection(eventsSection);
     return;
@@ -317,23 +517,35 @@ function openEvent(eventId) {
   renderEventDetails(eventId);
 }
 
-function beginCheckout() {
-  const event = getEventById(currentEventId);
+async function beginCheckout() {
+  const event = getPublishedEventById(currentEventId);
 
-  if (!event) {
+  if (!event) return;
+
+  if (!authToken || currentUser?.role !== "attendee") {
+    showTicketSelectionError(
+      "Please log in with an attendee account before booking."
+    );
+    showSection(document.querySelector("#loginSection"));
     return;
   }
 
-  const quantities = {};
-  const quantityInputs = eventDetails.querySelectorAll(".ticket-quantity");
+  const items = [];
+  const quantityInputs =
+    eventDetails.querySelectorAll(".ticket-quantity");
 
   for (const input of quantityInputs) {
     const quantity = Number(input.value);
-    const tierId = Number(input.dataset.tierId);
-    const tier = event.tiers.find((item) => item.id === tierId);
+    const tierId = input.dataset.tierId;
+
+    const tier = event.tiers.find(
+      (item) => String(item.id) === String(tierId)
+    );
 
     if (!Number.isInteger(quantity) || quantity < 0) {
-      showTicketSelectionError("Enter a whole-number ticket quantity.");
+      showTicketSelectionError(
+        "Enter a whole-number ticket quantity."
+      );
       return;
     }
 
@@ -345,31 +557,73 @@ function beginCheckout() {
         return;
       }
 
-      quantities[tierId] = quantity;
+      items.push({
+        tierId: String(tierId),
+        quantity,
+      });
     }
   }
 
-  if (Object.keys(quantities).length === 0) {
+  if (items.length === 0) {
     showTicketSelectionError("Please choose at least one ticket.");
     return;
   }
 
-  const result = createMockBooking(currentEventId, quantities);
+  try {
+    const response = await fetch(
+      `/api/events/${encodeURIComponent(event.id)}/bookings`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({ items }),
+      }
+    );
 
-  if (!result.success) {
-    showTicketSelectionError(result.message);
-    renderEventDetails(currentEventId);
-    return;
+    const result = await response.json();
+
+    if (!response.ok) {
+      throw new Error(
+        result.error?.message || "Could not reserve tickets."
+      );
+    }
+
+    const bookings = result.bookings;
+
+    currentBooking = {
+      eventTitle: event.title,
+      bookings,
+      references: bookings.map((booking) => booking.reference),
+      totalCents: bookings.reduce(
+        (total, booking) => total + booking.totalCents,
+        0
+      ),
+      tickets: bookings.map((booking) => {
+        const tier = event.tiers.find(
+          (item) => String(item.id) === String(booking.tierId)
+        );
+
+        return {
+          quantity: booking.quantity,
+          name: tier?.name || "Ticket",
+          priceCents: tier?.priceCents || 0,
+        };
+      }),
+    };
+
+    paymentMessage.textContent = "";
+    paymentMessage.className = "payment-message";
+    checkoutForm.reset();
+
+    renderOrderSummary(currentBooking);
+    startCountdown();
+    showSection(checkoutSection);
+
+  } catch (error) {
+    showTicketSelectionError(error.message);
   }
-
-  currentBooking = result.booking;
-  paymentMessage.textContent = "";
-  paymentMessage.className = "payment-message";
-  checkoutForm.reset();
-
-  renderOrderSummary(currentBooking);
-  startCountdown();
-  showSection(checkoutSection);
 }
 
 function showTicketSelectionError(message) {
@@ -404,27 +658,66 @@ function renderOrderSummary(booking) {
   payButtonAmount.textContent = formatMoney(booking.totalCents);
 }
 
+// Cancel all unpaid bookings created during checkout.
+async function cancelCurrentBooking() {
+  if (!currentBooking) {
+    return true;
+  }
+
+  try {
+    const response = await fetch("/api/booking-batches/cancel", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${authToken}`,
+      },
+      body: JSON.stringify({
+        references: currentBooking.references,
+      }),
+    });
+
+    const result = await response.json();
+
+    if (!response.ok) {
+      throw new Error(
+        result.error?.message || "Could not cancel bookings."
+      );
+    }
+
+    currentBooking = null;
+    return true;
+
+  } catch (error) {
+    paymentMessage.textContent = error.message;
+    paymentMessage.className = "payment-message payment-error";
+    return false;
+  }
+}
+
 function startCountdown() {
   stopCountdown();
   secondsRemaining = 300;
   updateCountdownDisplay();
 
-  countdownTimer = setInterval(() => {
+  countdownTimer = setInterval(async () => {
     secondsRemaining -= 1;
     updateCountdownDisplay();
 
     if (secondsRemaining <= 0) {
       stopCountdown();
 
-      if (currentBooking) {
-        releaseMockBooking(currentBooking.reference);
-        currentBooking = null;
+      const cancelled = await cancelCurrentBooking();
+
+      if (!cancelled) {
+        return;
       }
 
       paymentMessage.textContent =
         "Your checkout time expired. Your tickets have been released. Please select tickets again.";
+
       paymentMessage.className = "payment-message payment-error";
-      refreshEventList();
+
+      await loadPublishedEvents();
       renderEventDetails(currentEventId);
       showSection(eventDetailsSection);
     }
@@ -519,7 +812,269 @@ function resetFilters() {
 document.querySelector("#resetFilters").addEventListener("click", resetFilters);
 document.querySelector("#emptyResetButton").addEventListener("click", resetFilters);
 
+// Load tickets belonging to the logged-in attendee.
+async function loadMyTickets() {
+  const myTicketsList = document.querySelector("#myTicketsList");
+
+  if (!authToken) {
+    myTicketsList.textContent = "Please log in to view your tickets.";
+    showSection(document.querySelector("#loginSection"));
+    return;
+  }
+
+  myTicketsList.textContent = "Loading your tickets...";
+
+  try {
+    const response = await fetch("/api/my-tickets", {
+      headers: {
+        Authorization: `Bearer ${authToken}`,
+      },
+    });
+
+    const result = await response.json();
+
+    if (!response.ok) {
+      throw new Error(result.error?.message || "Could not load tickets.");
+    }
+
+    if (result.bookings.length === 0) {
+      myTicketsList.textContent = "You have no tickets yet.";
+      showSection(document.querySelector("#myTicketsSection"));
+      return;
+    }
+
+    myTicketsList.innerHTML = result.bookings
+      .map((booking) => `
+        <div class="confirmation-card">
+          <h3>${booking.event.name}</h3>
+          <p>Reference: ${booking.reference}</p>
+          <p>Ticket type: ${booking.tierName}</p>
+          <p>Quantity: ${booking.quantity}</p>
+          <p>Status: ${booking.status}</p>
+          <p>Payment: ${booking.paymentStatus}</p>
+          <p>Date: ${booking.event.date}</p>
+          <p>Venue: ${booking.event.venue}, ${booking.event.city}</p>
+        </div>
+      `)
+      .join("");
+
+    showSection(document.querySelector("#myTicketsSection"));
+  } catch (error) {
+    myTicketsList.textContent = error.message;
+    showSection(document.querySelector("#myTicketsSection"));
+  }
+}
+
+// Load events belonging to the logged-in organizer.
+async function loadOrganizerEvents() {
+  const organizerEventsList = document.querySelector("#organizerEventsList");
+
+  if (!authToken) {
+    showSection(document.querySelector("#loginSection"));
+    return;
+  }
+
+  organizerEventsList.textContent = "Loading your events...";
+
+  try {
+    const response = await fetch("/api/my-events", {
+      headers: {
+        Authorization: `Bearer ${authToken}`,
+      },
+    });
+
+    const result = await response.json();
+
+    if (!response.ok) {
+      throw new Error(result.error?.message || "Could not load events.");
+    }
+
+    if (result.events.length === 0) {
+      organizerEventsList.textContent = "You have not created any events yet.";
+      showSection(document.querySelector("#organizerDashboardSection"));
+      return;
+    }
+
+    organizerEventsList.replaceChildren();
+
+    result.events.forEach((event) => {
+      const card = document.createElement("div");
+      card.className = "confirmation-card";
+
+      const title = document.createElement("h3");
+      title.textContent = event.title;
+      card.append(title);
+
+      const details = [
+        `City: ${event.city}`,
+        `Venue: ${event.venue}`,
+        `Date: ${event.date}`,
+        `Status: ${event.published ? "Published" : "Unpublished"}`,
+      ];
+
+      details.forEach((detail) => {
+        const paragraph = document.createElement("p");
+        paragraph.textContent = detail;
+        card.append(paragraph);
+      });
+
+      // Add a ticket-tier form to this event card.
+const tierForm = document.createElement("form");
+tierForm.className = "tier-form";
+
+tierForm.innerHTML = `
+  <h4>Add Ticket Tier</h4>
+
+  <div class="field">
+    <label>Ticket name</label>
+    <input name="tierName" type="text" required
+      placeholder="General Admission">
+  </div>
+
+  <div class="field">
+    <label>Price (priceCents)</label>
+    <input name="priceCents" type="number"
+      min="0" step="1" required>
+  </div>
+
+  <div class="field">
+    <label>Ticket capacity</label>
+    <input name="capacity" type="number"
+      min="1" step="1" required>
+  </div>
+
+  <p class="tierMessage form-message" role="alert"></p>
+
+  <button class="primary-button" type="submit">
+    Add Ticket Tier
+  </button>
+`;
+
+card.append(tierForm);
+
+// Submit the ticket-tier form.
+tierForm.addEventListener("submit", async (submitEvent) => {
+  submitEvent.preventDefault();
+
+  const message = tierForm.querySelector(".tierMessage");
+  message.textContent = "Adding ticket tier...";
+
+  try {
+    const response = await fetch(
+      `/api/events/${encodeURIComponent(event.id)}/tiers`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({
+          name: tierForm.elements.tierName.value.trim(),
+          priceCents: Number(tierForm.elements.priceCents.value),
+          capacity: Number(tierForm.elements.capacity.value),
+        }),
+      }
+    );
+
+    const result = await response.json();
+
+    if (!response.ok) {
+      throw new Error(
+        result.error?.message || "Could not add ticket tier."
+      );
+    }
+
+    message.textContent = "Ticket tier added successfully!";
+    tierForm.reset();
+  } catch (error) {
+    message.textContent = error.message;
+  }
+});
+
+// Add a Publish Event button for unpublished events.
+if (!event.published) {
+  const publishButton = document.createElement("button");
+  publishButton.type = "button";
+  publishButton.className = "primary-button";
+  publishButton.textContent = "Publish Event";
+
+  const publishMessage = document.createElement("p");
+  publishMessage.className = "form-message";
+
+  card.append(publishButton, publishMessage);
+
+  publishButton.addEventListener("click", async () => {
+    publishMessage.textContent = "Publishing event...";
+    publishButton.disabled = true;
+
+    try {
+      const response = await fetch(
+        `/api/events/${encodeURIComponent(event.id)}/publish`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${authToken}`,
+          },
+        }
+      );
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          result.error?.message || "Could not publish event."
+        );
+      }
+
+      publishMessage.textContent = "Event published successfully!";
+      publishButton.textContent = "Published";
+
+      const statusParagraph = Array.from(
+        card.querySelectorAll("p")
+      ).find((paragraph) =>
+        paragraph.textContent.startsWith("Status:")
+      );
+
+      if (statusParagraph) {
+        statusParagraph.textContent = "Status: Published";
+      }
+
+    } catch (error) {
+      publishMessage.textContent = error.message;
+      publishButton.disabled = false;
+    }
+  });
+}
+
+      organizerEventsList.append(card);
+    });
+
+    showSection(document.querySelector("#organizerDashboardSection"));
+  } catch (error) {
+    organizerEventsList.textContent = error.message;
+    showSection(document.querySelector("#organizerDashboardSection"));
+  }
+}
+
 // Navigation buttons.
+// Open the login section.
+document.querySelector("#loginNavLink").addEventListener("click", (event) => {
+  event.preventDefault();
+  showSection(document.querySelector("#loginSection"));
+});
+
+// Open My Tickets and load the attendee's bookings.
+document.querySelector("#myTicketsNavLink").addEventListener("click", (event) => {
+  event.preventDefault();
+  loadMyTickets();
+});
+
+// Open the Organizer Dashboard and load the organizer's events.
+document.querySelector("#dashboardNavLink").addEventListener("click", (event) => {
+  event.preventDefault();
+  loadOrganizerEvents();
+});
+
 document.querySelector("#homeButton").addEventListener("click", () => {
   if (currentBooking) {
     leaveCheckout("events");
@@ -562,5 +1117,5 @@ document.querySelector("#confirmationHome").addEventListener("click", () => {
 });
 
 // Show the initial event list.
-renderEvents();
 showSection(eventsSection);
+loadPublishedEvents();

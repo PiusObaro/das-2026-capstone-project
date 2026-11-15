@@ -6,10 +6,18 @@ function fail(message, code = "VALIDATION") {
 }
 
 export function createSqliteEventService(db) {
-  const insertEvent = db.prepare(`
-    INSERT INTO events (id, name, city, venue, date, published)
-    VALUES (?, ?, ?, ?, ?, 0)
-  `);
+ const insertEvent = db.prepare(`
+  INSERT INTO events (
+    id,
+    name,
+    city,
+    venue,
+    date,
+    published,
+    organizer_id
+  )
+  VALUES (?, ?, ?, ?, ?, 0, ?)
+`);
 
   const insertTier = db.prepare(`
     INSERT INTO tiers
@@ -81,7 +89,14 @@ export function createSqliteEventService(db) {
   }
 
   return {
-    createEvent({ title, name, city = "", venue = "", date }) {
+    createEvent({
+  title,
+  name,
+  city = "",
+  venue = "",
+  date,
+  organizerId = null,
+}) {
       const eventName = title ?? name;
 
       if (
@@ -116,17 +131,18 @@ export function createSqliteEventService(db) {
       const eventId = newId();
 
       insertEvent.run(
-        eventId,
-        eventName.trim(),
-        city.trim(),
-        venue.trim(),
-        date
+      eventId,
+      eventName.trim(),
+      city.trim(),
+      venue.trim(),
+      date,
+      organizerId
       );
 
       return eventResponse(findEvent.get(eventId));
-    },
+      },
 
-    addTier(eventId, { name, priceCents, capacity }) {
+      addTier(eventId, { name, priceCents, capacity }) {
       const event = findEvent.get(eventId);
 
       if (!event) {
@@ -228,16 +244,24 @@ export function createSqliteEventService(db) {
       `).all();
 
       rows = rows.map((row) => ({
-        id: row.id,
-        title: row.name,
-        city: row.city,
-        venue: row.venue,
-        date: row.date,
-        published: Boolean(row.published),
-        cheapestPriceCents: row.cheapest_price_cents,
-        totalAvailable: row.total_available,
-      }));
+  id: row.id,
+  title: row.name,
+  city: row.city,
+  venue: row.venue,
+  date: row.date,
+  published: Boolean(row.published),
+  cheapestPriceCents: row.cheapest_price_cents,
+  totalAvailable: row.total_available,
 
+  tiers: listTiers.all(row.id).map((tier) => ({
+    id: tier.id,
+    eventId: tier.event_id,
+    name: tier.name,
+    priceCents: tier.price_cents,
+    capacity: tier.capacity,
+    available: tier.available,
+  })),
+}));
       if (criteria.q) {
         const query = criteria.q.toLowerCase();
 
@@ -315,8 +339,74 @@ export function createSqliteEventService(db) {
       return rows;
     },
 
-    createBooking(tierId, customerName, quantity = 1) {
-      if (
+        // Get events belonging to one organizer.
+getOrganizerEvents(organizerId) {
+  const events = db.prepare(`
+    SELECT
+      id,
+      name,
+      city,
+      venue,
+      date,
+      published
+    FROM events
+    WHERE organizer_id = ?
+    ORDER BY date ASC
+  `).all(organizerId);
+
+  return events.map((event) => ({
+    id: event.id,
+    title: event.name,
+    city: event.city,
+    venue: event.venue,
+    date: event.date,
+    published: Boolean(event.published),
+  }));
+},
+          // Get bookings belonging to one attendee.
+    getAttendeeBookings(attendeeId) {
+      const bookings = db.prepare(`
+        SELECT
+          bookings.id,
+          bookings.reference,
+          bookings.customer_name,
+          bookings.quantity,
+          bookings.total_cents,
+          bookings.status,
+          bookings.payment_status,
+          events.id AS event_id,
+          events.name AS event_name,
+          events.city,
+          events.venue,
+          events.date,
+          tiers.name AS tier_name
+        FROM bookings
+        JOIN tiers ON bookings.tier_id = tiers.id
+        JOIN events ON tiers.event_id = events.id
+        WHERE bookings.attendee_id = ?
+        ORDER BY bookings.id DESC
+      `).all(attendeeId);
+
+      return bookings.map((booking) => ({
+        id: booking.id,
+        reference: booking.reference,
+        customerName: booking.customer_name,
+        quantity: booking.quantity,
+        totalCents: booking.total_cents,
+        status: booking.status,
+        paymentStatus: booking.payment_status,
+        event: {
+          id: booking.event_id,
+          name: booking.event_name,
+          city: booking.city,
+          venue: booking.venue,
+          date: booking.date
+        },
+        tierName: booking.tier_name
+      }));
+    },
+
+        createBooking(tierId, customerName, quantity = 1, attendeeId) {      if (
         typeof customerName !== "string" ||
         !customerName.trim()
       ) {
@@ -366,10 +456,11 @@ export function createSqliteEventService(db) {
           fail("Not enough tickets available.", "SOLD_OUT");
         }
 
-        const booking = {
+                const booking = {
           id: newId(),
           reference: newReference(),
           tierId,
+          attendeeId,
           customerName: customerName.trim(),
           quantity,
           totalCents,
@@ -383,17 +474,19 @@ export function createSqliteEventService(db) {
             id,
             reference,
             tier_id,
+            attendee_id,
             customer_name,
             quantity,
             total_cents,
             status,
             payment_status
           )
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           booking.id,
           booking.reference,
           booking.tierId,
+          booking.attendeeId,
           booking.customerName,
           booking.quantity,
           booking.totalCents,
@@ -401,12 +494,330 @@ export function createSqliteEventService(db) {
           booking.paymentStatus
         );
 
-        return booking;
+         return booking;
       });
     },
+    // Create multiple ticket bookings in one transaction.
+createBookings(eventId, items, customerName, attendeeId) {
+  if (
+    typeof customerName !== "string" ||
+    !customerName.trim()
+  ) {
+    fail("Customer name must not be empty.");
+  }
 
-    async payBooking(reference) {
-      return runTransaction(() => {
+  if (!Array.isArray(items) || items.length === 0) {
+    fail("Select at least one ticket.");
+  }
+
+  return runTransaction(() => {
+    const event = findEvent.get(eventId);
+
+    if (!event) {
+      fail("Event not found.", "NOT_FOUND");
+    }
+
+    if (!event.published) {
+      fail(
+        "Tickets can only be booked for published events.",
+        "INVALID_STATE"
+      );
+    }
+
+    const bookings = [];
+
+    for (const item of items) {
+      const tierId = item?.tierId;
+      const quantity = item?.quantity;
+
+      if (
+        typeof tierId !== "string" ||
+        !tierId.trim()
+      ) {
+        fail("Invalid ticket tier.");
+      }
+
+      if (
+        !Number.isSafeInteger(quantity) ||
+        quantity < 1 ||
+        quantity > 10
+      ) {
+        fail("Ticket quantity must be between 1 and 10.");
+      }
+
+      const tier = findTier.get(tierId);
+
+      if (!tier || tier.event_id !== eventId) {
+        fail("Ticket tier not found.", "NOT_FOUND");
+      }
+
+      const update = db.prepare(`
+        UPDATE tiers
+        SET available = available - ?
+        WHERE id = ? AND available >= ?
+      `).run(quantity, tierId, quantity);
+
+      if (Number(update.changes) !== 1) {
+        fail("Not enough tickets available.", "SOLD_OUT");
+      }
+
+      const booking = {
+        id: newId(),
+        reference: newReference(),
+        tierId,
+        attendeeId,
+        customerName: customerName.trim(),
+        quantity,
+        totalCents: tier.price_cents * quantity,
+        status: "PENDING",
+        paymentStatus: "UNPAID",
+      };
+
+      db.prepare(`
+        INSERT INTO bookings (
+          id,
+          reference,
+          tier_id,
+          attendee_id,
+          customer_name,
+          quantity,
+          total_cents,
+          status,
+          payment_status
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        booking.id,
+        booking.reference,
+        booking.tierId,
+        booking.attendeeId,
+        booking.customerName,
+        booking.quantity,
+        booking.totalCents,
+        booking.status,
+        booking.paymentStatus
+      );
+
+      bookings.push(booking);
+    }
+
+    return bookings;
+  });
+},
+
+       async payBooking(reference, attendeeId) {
+  return runTransaction(() => {
+    const booking = db.prepare(`
+      SELECT *
+      FROM bookings
+      WHERE reference = ?
+    `).get(reference);
+
+    if (!booking) {
+      fail("Booking not found.", "NOT_FOUND");
+    }
+
+    if (booking.attendee_id !== attendeeId) {
+      fail("You are not allowed to access this booking.", "FORBIDDEN");
+    }
+
+    if (
+      booking.status !== "PENDING" ||
+      booking.payment_status !== "UNPAID"
+    ) {
+      fail(
+        `Cannot pay for a booking with status ${booking.status}.`,
+        "INVALID_STATE"
+      );
+    }
+
+    const result = db.prepare(`
+      UPDATE bookings
+      SET status = 'CONFIRMED',
+          payment_status = 'PAID'
+      WHERE reference = ?
+        AND status = 'PENDING'
+        AND payment_status = 'UNPAID'
+    `).run(reference);
+
+    if (Number(result.changes) !== 1) {
+      fail("Booking can no longer be paid.", "INVALID_STATE");
+    }
+
+    return {
+      id: booking.id,
+      reference: booking.reference,
+      tierId: booking.tier_id,
+      customerName: booking.customer_name,
+      quantity: booking.quantity,
+      totalCents: booking.total_cents,
+      status: "CONFIRMED",
+      paymentStatus: "PAID",
+    };
+  });
+},
+
+      // Pay for multiple bookings in one transaction.
+payBookings(references, attendeeId) {
+  if (
+    !Array.isArray(references) ||
+    references.length === 0 ||
+    references.some((reference) =>
+      typeof reference !== "string" || !reference.trim()
+    )
+  ) {
+    fail("Invalid booking references.");
+  }
+
+  if (new Set(references).size !== references.length) {
+    fail("Duplicate booking references are not allowed.");
+  }
+
+  return runTransaction(() => {
+    const bookings = references.map((reference) =>
+      db.prepare(`
+        SELECT *
+        FROM bookings
+        WHERE reference = ?
+      `).get(reference)
+    );
+
+    for (const booking of bookings) {
+      if (!booking) {
+        fail("Booking not found.", "NOT_FOUND");
+      }
+
+      if (booking.attendee_id !== attendeeId) {
+        fail("You are not allowed to access this booking.", "FORBIDDEN");
+      }
+
+      if (
+        booking.status !== "PENDING" ||
+        booking.payment_status !== "UNPAID"
+      ) {
+        fail("All bookings must be pending and unpaid.", "INVALID_STATE");
+      }
+    }
+
+    const update = db.prepare(`
+      UPDATE bookings
+      SET status = 'CONFIRMED',
+          payment_status = 'PAID'
+      WHERE reference = ?
+        AND status = 'PENDING'
+        AND payment_status = 'UNPAID'
+    `);
+
+    for (const booking of bookings) {
+      const result = update.run(booking.reference);
+
+      if (Number(result.changes) !== 1) {
+        fail("A booking can no longer be paid.", "INVALID_STATE");
+      }
+    }
+
+    return bookings.map((booking) => ({
+      id: booking.id,
+      reference: booking.reference,
+      tierId: booking.tier_id,
+      customerName: booking.customer_name,
+      quantity: booking.quantity,
+      totalCents: booking.total_cents,
+      status: "CONFIRMED",
+      paymentStatus: "PAID",
+    }));
+  });
+},
+
+// Cancel multiple unpaid bookings in one transaction.
+cancelBookings(references, attendeeId) {
+  if (
+    !Array.isArray(references) ||
+    references.length === 0 ||
+    references.some((reference) =>
+      typeof reference !== "string" || !reference.trim()
+    )
+  ) {
+    fail("Invalid booking references.");
+  }
+
+  if (new Set(references).size !== references.length) {
+    fail("Duplicate booking references are not allowed.");
+  }
+
+  return runTransaction(() => {
+    const bookings = references.map((reference) =>
+      db.prepare(`
+        SELECT *
+        FROM bookings
+        WHERE reference = ?
+      `).get(reference)
+    );
+
+    for (const booking of bookings) {
+      if (!booking) {
+        fail("Booking not found.", "NOT_FOUND");
+      }
+
+      if (booking.attendee_id !== attendeeId) {
+        fail("You are not allowed to access this booking.", "FORBIDDEN");
+      }
+
+      if (
+        booking.status !== "PENDING" ||
+        booking.payment_status !== "UNPAID"
+      ) {
+        fail("Only unpaid pending bookings can be cancelled.", "INVALID_STATE");
+      }
+    }
+
+    const cancel = db.prepare(`
+      UPDATE bookings
+      SET status = 'CANCELLED'
+      WHERE reference = ?
+        AND status = 'PENDING'
+        AND payment_status = 'UNPAID'
+    `);
+
+    const restore = db.prepare(`
+      UPDATE tiers
+      SET available = available + ?
+      WHERE id = ?
+        AND available + ? <= capacity
+    `);
+
+    for (const booking of bookings) {
+      const cancelled = cancel.run(booking.reference);
+
+      if (Number(cancelled.changes) !== 1) {
+        fail("A booking can no longer be cancelled.", "INVALID_STATE");
+      }
+
+      const restored = restore.run(
+        booking.quantity,
+        booking.tier_id,
+        booking.quantity
+      );
+
+      if (Number(restored.changes) !== 1) {
+        fail("Could not restore ticket availability.", "INVALID_STATE");
+      }
+    }
+
+    return bookings.map((booking) => ({
+      id: booking.id,
+      reference: booking.reference,
+      tierId: booking.tier_id,
+      customerName: booking.customer_name,
+      quantity: booking.quantity,
+      totalCents: booking.total_cents,
+      status: "CANCELLED",
+      paymentStatus: "UNPAID",
+    }));
+  });
+},
+
+        cancelUnpaidBooking(reference, attendeeId) {      return runTransaction(() => {
         const booking = db.prepare(`
           SELECT *
           FROM bookings
@@ -414,56 +825,12 @@ export function createSqliteEventService(db) {
         `).get(reference);
 
         if (!booking) {
-          fail("Booking not found.", "NOT_FOUND");
-        }
+  fail("Booking not found.", "NOT_FOUND");
+}
 
-        if (
-          booking.status !== "PENDING" ||
-          booking.payment_status !== "UNPAID"
-        ) {
-          fail(
-            `Cannot pay for a booking with status ${booking.status}.`,
-            "INVALID_STATE"
-          );
-        }
-
-        const result = db.prepare(`
-          UPDATE bookings
-          SET status = 'CONFIRMED',
-              payment_status = 'PAID'
-          WHERE reference = ?
-            AND status = 'PENDING'
-            AND payment_status = 'UNPAID'
-        `).run(reference);
-
-        if (Number(result.changes) !== 1) {
-          fail("Booking can no longer be paid.", "INVALID_STATE");
-        }
-
-        return {
-          id: booking.id,
-          reference: booking.reference,
-          tierId: booking.tier_id,
-          customerName: booking.customer_name,
-          quantity: booking.quantity,
-          totalCents: booking.total_cents,
-          status: "CONFIRMED",
-          paymentStatus: "PAID",
-        };
-      });
-    },
-
-    cancelUnpaidBooking(reference) {
-      return runTransaction(() => {
-        const booking = db.prepare(`
-          SELECT *
-          FROM bookings
-          WHERE reference = ?
-        `).get(reference);
-
-        if (!booking) {
-          fail("Booking not found.", "NOT_FOUND");
-        }
+if (booking.attendee_id !== attendeeId) {
+  fail("You are not allowed to access this booking.", "FORBIDDEN");
+}
 
         if (
           booking.status !== "PENDING" ||
