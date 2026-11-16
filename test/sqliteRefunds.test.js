@@ -95,3 +95,80 @@ test("paid booking cancellation records refund and restores tickets", async (t) 
     );
   });
 });
+
+test("refund policy handles the 10-day, 9-day, 3-day and 2-day boundaries", async (t) => {
+  const cases = [
+    { days: 10, expectedPercentage: 100 },
+    { days: 9, expectedPercentage: 50 },
+    { days: 3, expectedPercentage: 50 },
+    { days: 2, expectedPercentage: 0 }
+  ];
+
+  for (const item of cases) {
+    const db = openDatabase(":memory:");
+    const fixedNow = () => new Date("2026-11-16T12:00:00.000Z");
+
+    t.after(() => db.close());
+
+    const service = createSqliteEventService(db, {
+      now: fixedNow
+    });
+
+    const attendeeId = `attendee-${item.days}`;
+
+    db.prepare(`
+      INSERT INTO users (id, name, email, password_hash, role)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(
+      attendeeId,
+      "Test Attendee",
+      `attendee${item.days}@test.com`,
+      "test-password-hash",
+      "attendee"
+    );
+
+    const eventDate = new Date(
+      Date.UTC(2026, 10, 16 + item.days)
+    ).toISOString().slice(0, 10);
+
+    const event = service.createEvent({
+      title: `Refund Test ${item.days} Days`,
+      city: "Lagos",
+      venue: "Test Hall",
+      date: eventDate
+    });
+
+    const tier = service.addTier(event.id, {
+      name: "General Admission",
+      priceCents: 500000,
+      capacity: 5
+    });
+
+    service.publishEvent(event.id);
+
+    const booking = service.createBooking(
+      tier.id,
+      "Test Attendee",
+      1,
+      attendeeId
+    );
+
+    await service.payBooking(booking.reference, attendeeId);
+
+    const cancelled = service.cancelUnpaidBooking(
+      booking.reference,
+      attendeeId
+    );
+
+    assert.equal(
+      cancelled.refundPercentage,
+      item.expectedPercentage,
+      `${item.days} days before event`
+    );
+
+    assert.equal(
+      cancelled.refundAmountCents,
+      500000 * item.expectedPercentage / 100
+    );
+  }
+});
