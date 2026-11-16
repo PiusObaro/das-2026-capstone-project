@@ -1,12 +1,15 @@
 import { DomainError } from "../domain/errors.js";
 import { newId, newReference } from "../domain/ids.js";
+import { calculateRefund } from "../domain/refundPolicy.js";
 
 function fail(message, code = "VALIDATION") {
   throw new DomainError(message, code);
 }
 
-export function createSqliteEventService(db) {
- const insertEvent = db.prepare(`
+export function createSqliteEventService(
+  db,
+  { now = () => new Date() } = {}
+) { const insertEvent = db.prepare(`
   INSERT INTO events (
     id,
     name,
@@ -87,6 +90,115 @@ export function createSqliteEventService(db) {
       tiers,
     };
   }
+
+
+  // Cancel a booking and calculate any eligible refund.
+  // This function runs inside an existing transaction.
+  function cancelBookingInTransaction(reference, attendeeId) {
+    const booking = db.prepare(`
+      SELECT
+        bookings.*,
+        events.date AS event_date
+      FROM bookings
+      JOIN tiers ON tiers.id = bookings.tier_id
+      JOIN events ON events.id = tiers.event_id
+      WHERE bookings.reference = ?
+    `).get(reference);
+
+    if (!booking) {
+      fail("Booking not found.", "NOT_FOUND");
+    }
+
+    if (booking.attendee_id !== attendeeId) {
+      fail("You are not allowed to access this booking.", "FORBIDDEN");
+    }
+
+    const isUnpaid =
+      booking.status === "PENDING" &&
+      booking.payment_status === "UNPAID";
+
+    const isPaid =
+      booking.status === "CONFIRMED" &&
+      booking.payment_status === "PAID";
+
+    if (!isUnpaid && !isPaid) {
+      fail("This booking can no longer be cancelled.", "INVALID_STATE");
+    }
+
+    const currentTime = now();
+
+    const refund = isPaid
+      ? calculateRefund(
+          booking.total_cents,
+          booking.event_date,
+          currentTime
+        )
+      : {
+          percentage: 0,
+          refundAmountCents: 0
+        };
+
+    const refundStatus = !isPaid
+      ? "NONE"
+      : refund.refundAmountCents > 0
+        ? "SIMULATED"
+        : "NOT_ELIGIBLE";
+
+    const cancelledAt = currentTime.toISOString();
+
+    const result = db.prepare(`
+      UPDATE bookings
+      SET status = 'CANCELLED',
+          cancelled_at = ?,
+          refund_amount_cents = ?,
+          refund_status = ?
+      WHERE reference = ?
+        AND status = ?
+        AND payment_status = ?
+    `).run(
+      cancelledAt,
+      refund.refundAmountCents,
+      refundStatus,
+      reference,
+      booking.status,
+      booking.payment_status
+    );
+
+    if (Number(result.changes) !== 1) {
+      fail("Booking can no longer be cancelled.", "INVALID_STATE");
+    }
+
+    const restored = db.prepare(`
+      UPDATE tiers
+      SET available = available + ?
+      WHERE id = ?
+        AND available + ? <= capacity
+    `).run(
+      booking.quantity,
+      booking.tier_id,
+      booking.quantity
+    );
+
+    if (Number(restored.changes) !== 1) {
+      fail("Could not restore ticket availability.", "INVALID_STATE");
+    }
+
+    return {
+      id: booking.id,
+      reference: booking.reference,
+      tierId: booking.tier_id,
+      customerName: booking.customer_name,
+      quantity: booking.quantity,
+      totalCents: booking.total_cents,
+      status: "CANCELLED",
+      paymentStatus: booking.payment_status,
+      refundAmountCents: refund.refundAmountCents,
+      refundPercentage: refund.percentage,
+      refundStatus,
+      cancelledAt
+    };
+  }
+
 
   return {
     createEvent({
@@ -730,6 +842,7 @@ payBookings(references, attendeeId) {
 },
 
 // Cancel multiple unpaid bookings in one transaction.
+
 cancelBookings(references, attendeeId) {
   if (
     !Array.isArray(references) ||
@@ -745,144 +858,16 @@ cancelBookings(references, attendeeId) {
     fail("Duplicate booking references are not allowed.");
   }
 
-  return runTransaction(() => {
-    const bookings = references.map((reference) =>
-      db.prepare(`
-        SELECT *
-        FROM bookings
-        WHERE reference = ?
-      `).get(reference)
-    );
-
-    for (const booking of bookings) {
-      if (!booking) {
-        fail("Booking not found.", "NOT_FOUND");
-      }
-
-      if (booking.attendee_id !== attendeeId) {
-        fail("You are not allowed to access this booking.", "FORBIDDEN");
-      }
-
-      if (
-        booking.status !== "PENDING" ||
-        booking.payment_status !== "UNPAID"
-      ) {
-        fail("Only unpaid pending bookings can be cancelled.", "INVALID_STATE");
-      }
-    }
-
-    const cancel = db.prepare(`
-      UPDATE bookings
-      SET status = 'CANCELLED'
-      WHERE reference = ?
-        AND status = 'PENDING'
-        AND payment_status = 'UNPAID'
-    `);
-
-    const restore = db.prepare(`
-      UPDATE tiers
-      SET available = available + ?
-      WHERE id = ?
-        AND available + ? <= capacity
-    `);
-
-    for (const booking of bookings) {
-      const cancelled = cancel.run(booking.reference);
-
-      if (Number(cancelled.changes) !== 1) {
-        fail("A booking can no longer be cancelled.", "INVALID_STATE");
-      }
-
-      const restored = restore.run(
-        booking.quantity,
-        booking.tier_id,
-        booking.quantity
-      );
-
-      if (Number(restored.changes) !== 1) {
-        fail("Could not restore ticket availability.", "INVALID_STATE");
-      }
-    }
-
-    return bookings.map((booking) => ({
-      id: booking.id,
-      reference: booking.reference,
-      tierId: booking.tier_id,
-      customerName: booking.customer_name,
-      quantity: booking.quantity,
-      totalCents: booking.total_cents,
-      status: "CANCELLED",
-      paymentStatus: "UNPAID",
-    }));
-  });
+  return runTransaction(() =>
+    references.map((reference) =>
+      cancelBookingInTransaction(reference, attendeeId)
+    )
+  );
 },
-
-        cancelUnpaidBooking(reference, attendeeId) {      return runTransaction(() => {
-        const booking = db.prepare(`
-          SELECT *
-          FROM bookings
-          WHERE reference = ?
-        `).get(reference);
-
-        if (!booking) {
-  fail("Booking not found.", "NOT_FOUND");
-}
-
-if (booking.attendee_id !== attendeeId) {
-  fail("You are not allowed to access this booking.", "FORBIDDEN");
-}
-
-        if (
-          booking.status !== "PENDING" ||
-          booking.payment_status !== "UNPAID"
-        ) {
-          fail(
-            "Only unpaid pending bookings can be cancelled.",
-            "INVALID_STATE"
-          );
-        }
-
-        const result = db.prepare(`
-          UPDATE bookings
-          SET status = 'CANCELLED'
-          WHERE reference = ?
-            AND status = 'PENDING'
-            AND payment_status = 'UNPAID'
-        `).run(reference);
-
-        if (Number(result.changes) !== 1) {
-          fail("Booking can no longer be cancelled.", "INVALID_STATE");
-        }
-
-        const restored = db.prepare(`
-          UPDATE tiers
-          SET available = available + ?
-          WHERE id = ?
-            AND available + ? <= capacity
-        `).run(
-          booking.quantity,
-          booking.tier_id,
-          booking.quantity
-        );
-
-        if (Number(restored.changes) !== 1) {
-          fail(
-            "Could not restore ticket availability.",
-            "INVALID_STATE"
-          );
-        }
-
-        return {
-          id: booking.id,
-          reference: booking.reference,
-          tierId: booking.tier_id,
-          customerName: booking.customer_name,
-          quantity: booking.quantity,
-          totalCents: booking.total_cents,
-          status: "CANCELLED",
-          paymentStatus: "UNPAID",
-        };
-      });
-    },
+       cancelUnpaidBooking(reference, attendeeId) {
+  return runTransaction(() =>
+    cancelBookingInTransaction(reference, attendeeId)
+  );
+},
   };
 }

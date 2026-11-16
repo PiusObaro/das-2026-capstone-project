@@ -30,10 +30,9 @@ function addColumnIfMissing(db, table, column, definition) {
   }
 }
 
-export function openDatabase() {
-  const db = new DatabaseSync(databasePath);
-  console.log("DATABASE IN USE:", databasePath);
-
+export function openDatabase(filePath = databasePath) {
+  const db = new DatabaseSync(filePath);
+  console.log("DATABASE IN USE:", filePath);
   db.exec("PRAGMA foreign_keys = ON;");
 
   db.exec(`
@@ -96,6 +95,37 @@ export function openDatabase() {
     "attendee_id",
     "TEXT REFERENCES users(id)"
   );
+
+
+  // Build 8: booking expiry and refund information.
+  addColumnIfMissing(
+    db,
+    "bookings",
+    "expires_at",
+    "TEXT"
+  );
+
+  addColumnIfMissing(
+    db,
+    "bookings",
+    "cancelled_at",
+    "TEXT"
+  );
+
+  addColumnIfMissing(
+    db,
+    "bookings",
+    "refund_amount_cents",
+    "INTEGER NOT NULL DEFAULT 0"
+  );
+
+  addColumnIfMissing(
+    db,
+    "bookings",
+    "refund_status",
+    "TEXT NOT NULL DEFAULT 'NONE'"
+  );
+
 
   // Make user and ownership lookups faster.
   db.exec(`
