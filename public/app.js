@@ -93,6 +93,7 @@ function showSection(sectionToShow) {
     checkoutSection,
     confirmationSection,
     document.querySelector("#loginSection"),
+    document.querySelector("#signupSection"),
     document.querySelector("#myTicketsSection"),
     document.querySelector("#organizerDashboardSection")
   ].forEach((section) => {
@@ -1061,6 +1062,11 @@ if (!event.published) {
 document.querySelector("#loginNavLink").addEventListener("click", (event) => {
   event.preventDefault();
   showSection(document.querySelector("#loginSection"));
+});
+
+document.querySelector("#signupNavLink").addEventListener("click", (event) => {
+  event.preventDefault();
+  showSection(document.querySelector("#signupSection"));
 });
 
 // Open My Tickets and load the attendee's bookings.
