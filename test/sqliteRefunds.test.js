@@ -172,3 +172,247 @@ test("refund policy handles the 10-day, 9-day, 3-day and 2-day boundaries", asyn
     );
   }
 });
+
+
+test("unpaid booking expires after 15 minutes and restores tickets", async (t) => {
+  const db = openDatabase(":memory:");
+  t.after(() => db.close());
+
+  // Use a controllable clock.
+  let currentTime = new Date("2026-11-17T12:00:00.000Z");
+
+  const service = createSqliteEventService(db, {
+    now: () => new Date(currentTime)
+  });
+
+  const attendeeId = "expiry-test-attendee";
+
+  db.prepare(`
+    INSERT INTO users (id, name, email, password_hash, role)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(
+    attendeeId,
+    "Expiry Test Attendee",
+    "expiry@test.com",
+    "test-password-hash",
+    "attendee"
+  );
+
+  const event = service.createEvent({
+    title: "Expiry Test Concert",
+    city: "Lagos",
+    venue: "Test Hall",
+    date: "2026-12-05"
+  });
+
+  const tier = service.addTier(event.id, {
+    name: "General Admission",
+    priceCents: 500000,
+    capacity: 5
+  });
+
+  service.publishEvent(event.id);
+
+  // Create one unpaid booking.
+  const booking = service.createBooking(
+    tier.id,
+    "Expiry Test Attendee",
+    1,
+    attendeeId
+  );
+
+  assert.equal(booking.status, "PENDING");
+
+  // Confirm the booking expires 15 minutes after creation.
+  assert.equal(
+    booking.expiresAt,
+    "2026-11-17T12:15:00.000Z"
+  );
+
+  // Move the clock forward by 16 minutes.
+  currentTime = new Date("2026-11-17T12:16:00.000Z");
+
+  // Expire unpaid bookings.
+  const expiredCount = service.expireUnpaidBookings();
+
+  assert.equal(expiredCount, 1);
+
+  // Check the booking status in the database.
+  const updatedBooking = db.prepare(`
+    SELECT status
+    FROM bookings
+    WHERE reference = ?
+  `).get(booking.reference);
+
+  assert.equal(updatedBooking.status, "EXPIRED");
+
+  // Check that the ticket has been restored.
+  const updatedTier = db.prepare(`
+    SELECT available
+    FROM tiers
+    WHERE id = ?
+  `).get(tier.id);
+
+  assert.equal(updatedTier.available, 5);
+
+  // Running expiry again must not expire the same booking twice.
+  assert.equal(service.expireUnpaidBookings(), 0);
+});
+
+
+test("expired unpaid booking cannot be paid and tickets are restored", async (t) => {
+  const db = openDatabase(":memory:");
+  t.after(() => db.close());
+
+  let currentTime = new Date("2026-11-17T12:00:00.000Z");
+
+  const service = createSqliteEventService(db, {
+    now: () => new Date(currentTime)
+  });
+
+  const attendeeId = "expired-payment-attendee";
+
+  db.prepare(`
+    INSERT INTO users (id, name, email, password_hash, role)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(
+    attendeeId,
+    "Expired Payment Attendee",
+    "expired-payment@test.com",
+    "test-password-hash",
+    "attendee"
+  );
+
+  const event = service.createEvent({
+    title: "Expired Payment Concert",
+    city: "Lagos",
+    venue: "Test Hall",
+    date: "2026-12-05"
+  });
+
+  const tier = service.addTier(event.id, {
+    name: "General Admission",
+    priceCents: 500000,
+    capacity: 5
+  });
+
+  service.publishEvent(event.id);
+
+  const booking = service.createBooking(
+    tier.id,
+    "Expired Payment Attendee",
+    1,
+    attendeeId
+  );
+
+  // Move the clock beyond the 15-minute payment deadline.
+  currentTime = new Date("2026-11-17T12:16:00.000Z");
+
+  await assert.rejects(
+  () => service.payBooking(booking.reference, attendeeId),
+  /expired/i
+);
+  const updatedBooking = db.prepare(`
+    SELECT status, payment_status
+    FROM bookings
+    WHERE reference = ?
+  `).get(booking.reference);
+
+  assert.equal(updatedBooking.status, "EXPIRED");
+  assert.equal(updatedBooking.payment_status, "UNPAID");
+
+  const updatedTier = db.prepare(`
+    SELECT available
+    FROM tiers
+    WHERE id = ?
+  `).get(tier.id);
+
+  assert.equal(updatedTier.available, 5);
+});
+
+
+test("bulk payment rejects expired bookings and restores their tickets", async (t) => {
+  const db = openDatabase(":memory:");
+  t.after(() => db.close());
+
+  let currentTime = new Date("2026-11-17T12:00:00.000Z");
+
+  const service = createSqliteEventService(db, {
+    now: () => new Date(currentTime)
+  });
+
+  const attendeeId = "bulk-expiry-attendee";
+
+  db.prepare(`
+    INSERT INTO users (id, name, email, password_hash, role)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(
+    attendeeId,
+    "Bulk Expiry Attendee",
+    "bulk-expiry@test.com",
+    "test-password-hash",
+    "attendee"
+  );
+
+  const event = service.createEvent({
+    title: "Bulk Expiry Concert",
+    city: "Lagos",
+    venue: "Test Hall",
+    date: "2026-12-05"
+  });
+
+  const tier = service.addTier(event.id, {
+    name: "General Admission",
+    priceCents: 500000,
+    capacity: 5
+  });
+
+  service.publishEvent(event.id);
+
+  const bookingOne = service.createBooking(
+    tier.id,
+    "Bulk Expiry Attendee One",
+    1,
+    attendeeId
+  );
+
+  const bookingTwo = service.createBooking(
+    tier.id,
+    "Bulk Expiry Attendee Two",
+    1,
+    attendeeId
+  );
+
+  // Move beyond the 15-minute payment deadline.
+  currentTime = new Date("2026-11-17T12:16:00.000Z");
+
+  assert.throws(
+  () => service.payBookings(
+    [bookingOne.reference, bookingTwo.reference],
+    attendeeId
+  ),
+  /expired/i
+);
+
+  const expiredBookings = db.prepare(`
+    SELECT status, payment_status
+    FROM bookings
+    WHERE reference IN (?, ?)
+  `).all(bookingOne.reference, bookingTwo.reference);
+
+  assert.equal(expiredBookings.length, 2);
+
+  for (const booking of expiredBookings) {
+    assert.equal(booking.status, "EXPIRED");
+    assert.equal(booking.payment_status, "UNPAID");
+  }
+
+  const updatedTier = db.prepare(`
+    SELECT available
+    FROM tiers
+    WHERE id = ?
+  `).get(tier.id);
+
+  assert.equal(updatedTier.available, 5);
+});
+

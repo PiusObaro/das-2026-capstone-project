@@ -200,6 +200,54 @@ export function createSqliteEventService(
   }
 
 
+  // Expire unpaid bookings whose payment deadline has passed.
+  function expireUnpaidBookings() {
+    return runTransaction(() => {
+      const currentTime = now().toISOString();
+
+      const expiredBookings = db.prepare(`
+        SELECT id, tier_id, quantity
+        FROM bookings
+        WHERE status = 'PENDING'
+          AND payment_status = 'UNPAID'
+          AND expires_at IS NOT NULL
+          AND expires_at <= ?
+      `).all(currentTime);
+
+      for (const booking of expiredBookings) {
+        const result = db.prepare(`
+          UPDATE bookings
+          SET status = 'EXPIRED'
+          WHERE id = ?
+            AND status = 'PENDING'
+            AND payment_status = 'UNPAID'
+        `).run(booking.id);
+
+        if (Number(result.changes) !== 1) {
+          fail("Could not expire booking.", "INVALID_STATE");
+        }
+
+        const restored = db.prepare(`
+          UPDATE tiers
+          SET available = available + ?
+          WHERE id = ?
+            AND available + ? <= capacity
+        `).run(
+          booking.quantity,
+          booking.tier_id,
+          booking.quantity
+        );
+
+        if (Number(restored.changes) !== 1) {
+          fail("Could not restore expired tickets.", "INVALID_STATE");
+        }
+      }
+
+      return expiredBookings.length;
+    });
+  }
+
+
   return {
     createEvent({
   title,
@@ -550,6 +598,10 @@ getOrganizerEvents(organizerId) {
           );
         }
 
+        const createdAt = now();
+        const expiresAt = new Date(
+         createdAt.getTime() + 15 * 60 * 1000
+        ).toISOString();
         const totalCents = tier.price_cents * quantity;
 
         if (!Number.isSafeInteger(totalCents)) {
@@ -576,10 +628,13 @@ getOrganizerEvents(organizerId) {
           customerName: customerName.trim(),
           quantity,
           totalCents,
+          createdAt: createdAt.toISOString(),
+          expiresAt,
           status: "PENDING",
           paymentStatus: "UNPAID",
         };
 
+        
         // The ticket reduction and booking insertion commit together.
         db.prepare(`
           INSERT INTO bookings (
@@ -591,9 +646,10 @@ getOrganizerEvents(organizerId) {
             quantity,
             total_cents,
             status,
-            payment_status
+            payment_status,
+            expires_at
           )
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           booking.id,
           booking.reference,
@@ -603,10 +659,13 @@ getOrganizerEvents(organizerId) {
           booking.quantity,
           booking.totalCents,
           booking.status,
-          booking.paymentStatus
+          booking.paymentStatus,
+          booking.expiresAt
         );
 
+
          return booking;
+
       });
     },
     // Create multiple ticket bookings in one transaction.
@@ -717,8 +776,9 @@ createBookings(eventId, items, customerName, attendeeId) {
   });
 },
 
-       async payBooking(reference, attendeeId) {
-  return runTransaction(() => {
+       
+async payBooking(reference, attendeeId) {
+  const paymentResult = runTransaction(() => {
     const booking = db.prepare(`
       SELECT *
       FROM bookings
@@ -741,6 +801,44 @@ createBookings(eventId, items, customerName, attendeeId) {
         `Cannot pay for a booking with status ${booking.status}.`,
         "INVALID_STATE"
       );
+    }
+
+    // Check whether the 15-minute payment deadline has passed.
+    const currentTime = now().toISOString();
+
+    if (
+      booking.expires_at &&
+      booking.expires_at <= currentTime
+    ) {
+      const expired = db.prepare(`
+        UPDATE bookings
+        SET status = 'EXPIRED'
+        WHERE reference = ?
+          AND status = 'PENDING'
+          AND payment_status = 'UNPAID'
+      `).run(reference);
+
+      if (Number(expired.changes) !== 1) {
+        fail("Could not expire booking.", "INVALID_STATE");
+      }
+
+      // Return the tickets to available inventory.
+      const restored = db.prepare(`
+        UPDATE tiers
+        SET available = available + ?
+        WHERE id = ?
+          AND available + ? <= capacity
+      `).run(
+        booking.quantity,
+        booking.tier_id,
+        booking.quantity
+      );
+
+      if (Number(restored.changes) !== 1) {
+        fail("Could not restore expired tickets.", "INVALID_STATE");
+      }
+
+      return { expired: true };
     }
 
     const result = db.prepare(`
@@ -767,9 +865,21 @@ createBookings(eventId, items, customerName, attendeeId) {
       paymentStatus: "PAID",
     };
   });
+
+  // Throw after the transaction commits so the expiry is not rolled back.
+  if (paymentResult.expired) {
+    fail(
+      "This booking has expired. The tickets have been returned to inventory.",
+      "INVALID_STATE"
+    );
+  }
+
+  return paymentResult;
 },
 
+
       // Pay for multiple bookings in one transaction.
+
 payBookings(references, attendeeId) {
   if (
     !Array.isArray(references) ||
@@ -785,7 +895,7 @@ payBookings(references, attendeeId) {
     fail("Duplicate booking references are not allowed.");
   }
 
-  return runTransaction(() => {
+  const paymentResult = runTransaction(() => {
     const bookings = references.map((reference) =>
       db.prepare(`
         SELECT *
@@ -809,6 +919,48 @@ payBookings(references, attendeeId) {
       ) {
         fail("All bookings must be pending and unpaid.", "INVALID_STATE");
       }
+    }
+
+    // Check the payment deadline for every booking.
+    const currentTime = now().toISOString();
+
+    const expiredBookings = bookings.filter(
+      (booking) =>
+        booking.expires_at &&
+        booking.expires_at <= currentTime
+    );
+
+    if (expiredBookings.length > 0) {
+      for (const booking of expiredBookings) {
+        const expired = db.prepare(`
+          UPDATE bookings
+          SET status = 'EXPIRED'
+          WHERE reference = ?
+            AND status = 'PENDING'
+            AND payment_status = 'UNPAID'
+        `).run(booking.reference);
+
+        if (Number(expired.changes) !== 1) {
+          fail("Could not expire booking.", "INVALID_STATE");
+        }
+
+        const restored = db.prepare(`
+          UPDATE tiers
+          SET available = available + ?
+          WHERE id = ?
+            AND available + ? <= capacity
+        `).run(
+          booking.quantity,
+          booking.tier_id,
+          booking.quantity
+        );
+
+        if (Number(restored.changes) !== 1) {
+          fail("Could not restore expired tickets.", "INVALID_STATE");
+        }
+      }
+
+      return { expired: true };
     }
 
     const update = db.prepare(`
@@ -839,6 +991,16 @@ payBookings(references, attendeeId) {
       paymentStatus: "PAID",
     }));
   });
+
+  // Report expiry only after the transaction commits.
+  if (paymentResult.expired) {
+    fail(
+      "One or more bookings have expired. Their tickets have been returned to inventory.",
+      "INVALID_STATE"
+    );
+  }
+
+  return paymentResult;
 },
 
 // Cancel multiple unpaid bookings in one transaction.
@@ -869,5 +1031,7 @@ cancelBookings(references, attendeeId) {
     cancelBookingInTransaction(reference, attendeeId)
   );
 },
+
+expireUnpaidBookings,
   };
 }
