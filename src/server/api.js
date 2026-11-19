@@ -405,6 +405,59 @@ if (match) {
 
   return sendJson(res, 200, { booking });
 }
+
+
+    // Join the waitlist for a sold-out ticket tier.
+    match = pathname.match(/^\/api\/tiers\/([^/]+)\/waitlist$/);
+
+    if (match) {
+      if (req.method !== "POST") methodNotAllowed();
+
+      const user = authenticate(req);
+      requireRole(user, "attendee");
+
+      const body = await readJson(req);
+
+      const entry = service.joinWaitlist(
+        decodeURIComponent(match[1]),
+        body.customerName || user.name,
+        body.quantity ?? 1,
+        user.sub
+      );
+
+      return sendJson(res, 201, { entry });
+    }
+
+    // Get waitlist entries and offers for the logged-in attendee.
+    if (pathname === "/api/my-waitlist") {
+      if (req.method !== "GET") methodNotAllowed();
+
+      const user = authenticate(req);
+      requireRole(user, "attendee");
+
+      const entries = service.getAttendeeWaitlist(user.sub);
+
+      return sendJson(res, 200, { entries });
+    }
+
+    // Accept a waitlist offer.
+    match = pathname.match(/^\/api\/waitlist\/([^/]+)\/accept$/);
+
+    if (match) {
+      if (req.method !== "POST") methodNotAllowed();
+
+      const user = authenticate(req);
+      requireRole(user, "attendee");
+
+      const booking = service.acceptWaitlistOffer(
+        decodeURIComponent(match[1]),
+        user.sub
+      );
+
+      return sendJson(res, 201, { booking });
+    }
+
+
     throw new DomainError("API endpoint not found.", "NOT_FOUND");
      } catch (error) {
 

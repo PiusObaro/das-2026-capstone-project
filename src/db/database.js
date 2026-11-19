@@ -79,6 +79,20 @@ export function openDatabase(filePath = databasePath) {
       payment_status TEXT NOT NULL,
       FOREIGN KEY (tier_id) REFERENCES tiers(id)
     );
+
+    CREATE TABLE IF NOT EXISTS waitlist (      id TEXT PRIMARY KEY,
+      tier_id TEXT NOT NULL,
+      attendee_id TEXT NOT NULL,
+      customer_name TEXT NOT NULL,
+      quantity INTEGER NOT NULL CHECK (quantity BETWEEN 1 AND 10),
+      status TEXT NOT NULL DEFAULT 'WAITING'
+        CHECK (status IN ('WAITING', 'OFFERED', 'ACCEPTED', 'EXPIRED')),
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      offered_at TEXT,
+      expires_at TEXT,
+      FOREIGN KEY (tier_id) REFERENCES tiers(id),
+      FOREIGN KEY (attendee_id) REFERENCES users(id)
+    );
   `); 
 
   // Add ownership fields without deleting existing records.
@@ -137,7 +151,11 @@ export function openDatabase(filePath = databasePath) {
 
     CREATE INDEX IF NOT EXISTS idx_bookings_attendee
     ON bookings(attendee_id);
+
+        CREATE INDEX IF NOT EXISTS idx_waitlist_tier_status
+    ON waitlist(tier_id, status, created_at);
   `);
+
 
   return db;
 }

@@ -438,6 +438,32 @@ assert.ok(
   )
 );
 
+// Check that cancelled bookings restore ticket inventory.
+const inventoryResponse = await fetch(
+  `${baseUrl}/api/events?city=Lagos`
+);
+
+assert.equal(inventoryResponse.status, 200);
+
+const inventoryResult = await inventoryResponse.json();
+
+const updatedEvent = inventoryResult.events.find(
+  (item) => item.id === event.id
+);
+
+assert.ok(updatedEvent);
+
+const updatedGeneralTier = updatedEvent.tiers.find(
+  (item) => item.id === tier.id
+);
+
+const updatedVipTier = updatedEvent.tiers.find(
+  (item) => item.id === vipTier.id
+);
+
+assert.equal(updatedGeneralTier.available, 4);
+assert.equal(updatedVipTier.available, 4);
+
     // Check that an attendee cannot create an event.
   const attendeeCreateResponse = await fetch(
     `${baseUrl}/api/events`,
@@ -611,5 +637,173 @@ assert.equal(secondMyTickets.bookings.length, 0);
   assert.equal(
     typeof errorBody.error.message,
     "string"
+  );
+
+
+
+  // 9. Test the waitlist API routes.
+
+  // Create a separate event with one ticket.
+  const waitlistEventResponse = await fetch(
+    `${baseUrl}/api/events`,
+    {
+      method: "POST",
+      headers: authHeaders,
+      body: JSON.stringify({
+        title: "Waitlist API Test Concert",
+        city: "Lagos",
+        venue: "Waitlist Test Hall",
+        date: "2026-12-30",
+      }),
+    }
+  );
+
+  assert.equal(waitlistEventResponse.status, 201);
+
+  const { event: waitlistEvent } =
+    await waitlistEventResponse.json();
+
+  // Add a ticket tier with capacity one.
+  const waitlistTierResponse = await fetch(
+    `${baseUrl}/api/events/${waitlistEvent.id}/tiers`,
+    {
+      method: "POST",
+      headers: authHeaders,
+      body: JSON.stringify({
+        name: "Waitlist General Admission",
+        priceCents: 500000,
+        capacity: 1,
+      }),
+    }
+  );
+
+  assert.equal(waitlistTierResponse.status, 201);
+
+  const { tier: waitlistTier } =
+    await waitlistTierResponse.json();
+
+  // Publish the event.
+  const waitlistPublishResponse = await fetch(
+    `${baseUrl}/api/events/${waitlistEvent.id}/publish`,
+    {
+      method: "POST",
+      headers: authHeaders,
+    }
+  );
+
+  assert.equal(waitlistPublishResponse.status, 200);
+
+  // The first attendee takes the only ticket.
+  const waitlistBuyerResponse = await fetch(
+    `${baseUrl}/api/tiers/${waitlistTier.id}/bookings`,
+    {
+      method: "POST",
+      headers: attendeeHeaders,
+      body: JSON.stringify({
+        customerName: "Waitlist Buyer",
+        quantity: 1,
+      }),
+    }
+  );
+
+  assert.equal(waitlistBuyerResponse.status, 201);
+
+  const { booking: waitlistBuyerBooking } =
+    await waitlistBuyerResponse.json();
+
+  // The second attendee joins the waitlist.
+  const joinWaitlistResponse = await fetch(
+    `${baseUrl}/api/tiers/${waitlistTier.id}/waitlist`,
+    {
+      method: "POST",
+      headers: secondAttendeeHeaders,
+      body: JSON.stringify({
+        customerName: "Waitlist Customer",
+        quantity: 1,
+      }),
+    }
+  );
+
+  assert.equal(joinWaitlistResponse.status, 201);
+
+  const { entry: waitlistEntry } =
+    await joinWaitlistResponse.json();
+
+  assert.ok(waitlistEntry.id);
+
+  // Retrieve the second attendee's waitlist.
+  const myWaitlistResponse = await fetch(
+    `${baseUrl}/api/my-waitlist`,
+    {
+      headers: secondAttendeeHeaders,
+    }
+  );
+
+  assert.equal(myWaitlistResponse.status, 200);
+
+  const myWaitlist = await myWaitlistResponse.json();
+
+  assert.ok(
+    myWaitlist.entries.some(
+      (entry) => entry.id === waitlistEntry.id
+    )
+  );
+
+  // Cancel the original booking to create a waitlist offer.
+  const releaseTicketResponse = await fetch(
+    `${baseUrl}/api/bookings/${waitlistBuyerBooking.reference}/cancel`,
+    {
+      method: "POST",
+      headers: attendeeHeaders,
+    }
+  );
+
+  assert.equal(releaseTicketResponse.status, 200);
+
+  // Retrieve the waitlist again and confirm the offer.
+  const offeredWaitlistResponse = await fetch(
+    `${baseUrl}/api/my-waitlist`,
+    {
+      headers: secondAttendeeHeaders,
+    }
+  );
+
+  assert.equal(offeredWaitlistResponse.status, 200);
+
+  const offeredWaitlist = await offeredWaitlistResponse.json();
+
+  const offeredEntry = offeredWaitlist.entries.find(
+    (entry) => entry.id === waitlistEntry.id
+  );
+
+  assert.ok(offeredEntry);
+  assert.equal(offeredEntry.status, "OFFERED");
+
+  // Accept the waitlist offer.
+  const acceptWaitlistResponse = await fetch(
+    `${baseUrl}/api/waitlist/${waitlistEntry.id}/accept`,
+    {
+      method: "POST",
+      headers: secondAttendeeHeaders,
+    }
+  );
+
+  assert.equal(acceptWaitlistResponse.status, 201);
+
+  const { booking: acceptedWaitlistBooking } =
+    await acceptWaitlistResponse.json();
+
+  assert.equal(
+  acceptedWaitlistBooking.attendeeId,
+  secondAttendee.user.id
+);
+  assert.equal(
+    acceptedWaitlistBooking.status,
+    "PENDING"
+  );
+
+  assert.equal(
+    acceptedWaitlistBooking.paymentStatus,
+    "UNPAID"
   );
 });
